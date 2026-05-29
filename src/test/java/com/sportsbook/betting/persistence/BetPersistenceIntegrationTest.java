@@ -19,7 +19,9 @@ import java.util.stream.IntStream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
+import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -30,17 +32,15 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * Proves the {@link Bet} / {@link BetLeg} JPA mapping matches the Flyway schema (Hibernate {@code
- * ddl-auto: validate} fails the context start otherwise) and that the two ADR-0005 uniqueness
- * guarantees hold at the DB level. Kafka + Redis autoconfiguration are excluded — this slice only
- * needs PostgreSQL.
+ * ddl-auto: validate} fails context start otherwise) and that the two ADR-0005 uniqueness
+ * guarantees hold at the DB level.
+ *
+ * <p>A {@code @DataJpaTest} slice against real PostgreSQL (Testcontainers, {@code replace = NONE})
+ * — deliberately not a full {@code @SpringBootTest}, so it stays insulated from the growing
+ * component graph (Redis odds checker, Kafka outbox, HTTP clients) and only needs a database.
  */
-@SpringBootTest(
-    properties = {
-      "spring.autoconfigure.exclude="
-          + "org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration,"
-          + "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration,"
-          + "org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration"
-    })
+@DataJpaTest(properties = "spring.jpa.hibernate.ddl-auto=validate")
+@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @Testcontainers
 @ActiveProfiles("test")
 class BetPersistenceIntegrationTest {
@@ -56,6 +56,7 @@ class BetPersistenceIntegrationTest {
   }
 
   @Autowired BetRepository bets;
+  @Autowired TestEntityManager em;
 
   private static final Instant NOW = Instant.parse("2026-05-29T07:00:00Z");
 
@@ -91,8 +92,10 @@ class BetPersistenceIntegrationTest {
     UUID betId = saved.betId();
 
     bets.save(saved);
-    Bet loaded = bets.findWithLegsByBetId(betId).orElseThrow();
+    em.flush();
+    em.clear(); // force a real DB read rather than a first-level cache hit
 
+    Bet loaded = bets.findWithLegsByBetId(betId).orElseThrow();
     assertThat(loaded.status()).isEqualTo(BetStatus.PENDING);
     assertThat(loaded.betReference()).isEqualTo("B-2026-05-29-RTRIP001");
     assertThat(loaded.stake()).isEqualTo(new Money(10_000L, Currency.KRW));
@@ -105,7 +108,7 @@ class BetPersistenceIntegrationTest {
   @Test
   @DisplayName("rejects a duplicate Idempotency-Key (ADR-0005 DB unique)")
   void rejects_duplicate_idempotency_key() {
-    bets.save(systemBet("B-2026-05-29-DUP-IDEM1", "idem-dup", legs(2)));
+    bets.saveAndFlush(systemBet("B-2026-05-29-DUP-IDEM1", "idem-dup", legs(2)));
 
     Bet collision = systemBet("B-2026-05-29-DUP-IDEM2", "idem-dup", legs(2));
     assertThatThrownBy(() -> bets.saveAndFlush(collision))
@@ -115,7 +118,7 @@ class BetPersistenceIntegrationTest {
   @Test
   @DisplayName("rejects a duplicate bet_reference (ADR-0003 human reference unique)")
   void rejects_duplicate_reference() {
-    bets.save(systemBet("B-2026-05-29-DUP-REF", "idem-ref-a", legs(2)));
+    bets.saveAndFlush(systemBet("B-2026-05-29-DUP-REF", "idem-ref-a", legs(2)));
 
     Bet collision = systemBet("B-2026-05-29-DUP-REF", "idem-ref-b", legs(2));
     assertThatThrownBy(() -> bets.saveAndFlush(collision))
