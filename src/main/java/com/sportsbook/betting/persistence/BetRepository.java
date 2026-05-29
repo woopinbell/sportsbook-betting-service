@@ -17,7 +17,11 @@ import org.springframework.data.jpa.repository.JpaRepository;
  */
 public interface BetRepository extends JpaRepository<Bet, UUID> {
 
-  /** Idempotency lookup (ADR-0005): returns the prior bet for a replayed Idempotency-Key. */
+  /**
+   * Idempotency lookup (ADR-0005): the prior bet for a replayed Idempotency-Key. Legs are fetched
+   * eagerly because a replay is rendered straight back to the caller as a response.
+   */
+  @EntityGraph(attributePaths = "legs")
   Optional<Bet> findByIdempotencyKey(String idempotencyKey);
 
   /** Loads a bet with its legs eagerly so callers can read the slip outside an open session. */
@@ -30,4 +34,15 @@ public interface BetRepository extends JpaRepository<Bet, UUID> {
    */
   @EntityGraph(attributePaths = "legs")
   List<Bet> findByStatusAndCreatedAtBefore(BetStatus status, Instant threshold, Pageable pageable);
+
+  /**
+   * Cursor page (ADR-0004): a user's bets newest-first. betId is UUID v7 (time-ordered), so it
+   * doubles as the keyset cursor — backed by ix_bet_user_bet. First page omits the cursor.
+   */
+  @EntityGraph(attributePaths = "legs")
+  List<Bet> findByUserIdOrderByBetIdDesc(UUID userId, Pageable pageable);
+
+  @EntityGraph(attributePaths = "legs")
+  List<Bet> findByUserIdAndBetIdLessThanOrderByBetIdDesc(
+      UUID userId, UUID cursor, Pageable pageable);
 }

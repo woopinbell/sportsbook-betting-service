@@ -63,8 +63,9 @@ public class BetStore {
    */
   @Transactional
   public Bet acceptAndEnqueue(UUID betId, OutboxEvent event, Instant now) {
+    // Legs eager: the returned bet is rendered into the placement response after the tx closes.
     Bet bet =
-        bets.findById(betId)
+        bets.findWithLegsByBetId(betId)
             .orElseThrow(
                 () -> new IllegalStateException("Bet vanished before acceptance: " + betId));
     // Idempotent: if a concurrent path / earlier reconciliation tick already accepted this bet,
