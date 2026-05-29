@@ -80,3 +80,32 @@ betting:
       KRW: 1000000
       USD: 1000
     slippage-tolerance-percent: 3
+
+  # Synchronous risk / wallet dependencies (ADR-0017). Timeouts are the
+  # fail-fast bound on the placement critical path.
+  clients:
+    risk-base-url: ${RISK_BASE_URL:http://localhost:8083}
+    wallet-base-url: ${WALLET_BASE_URL:http://localhost:8081}
+    connect-timeout: 200ms
+    read-timeout: 500ms
+
+# Resilience4j (ADR-0017). Only DependencyUnavailableException (the fail-closed
+# signal the clients raise on timeout / 5xx / connection error) is recorded, so
+# business rejections (limit exceeded, insufficient balance) never trip a breaker.
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 20
+        minimum-number-of-calls: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 5s
+        permitted-number-of-calls-in-half-open-state: 5
+        record-exceptions:
+          - com.sportsbook.betting.error.DependencyUnavailableException
+    instances:
+      riskClient:
+        base-config: default
+      walletClient:
+        base-config: default
