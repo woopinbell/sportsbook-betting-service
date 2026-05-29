@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.sportsbook.betting.infrastructure.id.UuidV7;
 import com.sportsbook.protocol.domain.BetSlipType;
 import com.sportsbook.protocol.domain.BetStatus;
+import com.sportsbook.protocol.domain.SettlementResult;
 import com.sportsbook.protocol.value.Currency;
 import com.sportsbook.protocol.value.IdempotencyKey;
 import com.sportsbook.protocol.value.Money;
@@ -24,6 +25,7 @@ class BetTest {
   private static final UUID USER = UUID.fromString("00000000-0000-7000-8000-00000000aaaa");
   private static final Instant T0 = Instant.parse("2026-05-29T07:00:00Z");
   private static final Instant T1 = Instant.parse("2026-05-29T07:00:01Z");
+  private static final Instant T2 = Instant.parse("2026-05-29T09:30:00Z");
   private static final IdempotencyKey IDEM = IdempotencyKey.of("idem-key-1");
 
   private static Money krw(long minor) {
@@ -189,6 +191,94 @@ class BetTest {
       bet.accept(T1);
 
       assertThatThrownBy(() -> bet.reject("late", T1)).isInstanceOf(IllegalStateException.class);
+    }
+  }
+
+  @Nested
+  @DisplayName("settlement transitions from ACCEPTED")
+  class SettlementTransitions {
+
+    private Bet accepted() {
+      Bet bet = pending(new BetSlipType.Single(), legs(1));
+      bet.accept(T1);
+      return bet;
+    }
+
+    @Test
+    void settle_records_result_and_payout() {
+      Bet bet = accepted();
+
+      bet.settle(SettlementResult.WON, krw(18_500), T2);
+
+      assertThat(bet.status()).isEqualTo(BetStatus.SETTLED);
+      assertThat(bet.settlementResult()).isEqualTo(SettlementResult.WON);
+      assertThat(bet.settledPayout()).isEqualTo(krw(18_500));
+      assertThat(bet.resolvedAt()).isEqualTo(T2);
+    }
+
+    @Test
+    void lost_settles_with_zero_payout() {
+      Bet bet = accepted();
+
+      bet.settle(SettlementResult.LOST, krw(0), T2);
+
+      assertThat(bet.status()).isEqualTo(BetStatus.SETTLED);
+      assertThat(bet.settledPayout()).isEqualTo(krw(0));
+    }
+
+    @Test
+    void void_records_reason() {
+      Bet bet = accepted();
+
+      bet.voidBet(VoidReason.EVENT_CANCELLED, T2);
+
+      assertThat(bet.status()).isEqualTo(BetStatus.VOIDED);
+      assertThat(bet.voidReason()).isEqualTo(VoidReason.EVENT_CANCELLED);
+      assertThat(bet.resolvedAt()).isEqualTo(T2);
+    }
+
+    @Test
+    void cannot_settle_before_accept() {
+      Bet bet = pending(new BetSlipType.Single(), legs(1));
+
+      assertThatThrownBy(() -> bet.settle(SettlementResult.WON, krw(18_500), T2))
+          .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void cannot_void_before_accept() {
+      Bet bet = pending(new BetSlipType.Single(), legs(1));
+
+      assertThatThrownBy(() -> bet.voidBet(VoidReason.EVENT_CANCELLED, T2))
+          .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void cannot_settle_twice() {
+      Bet bet = accepted();
+      bet.settle(SettlementResult.WON, krw(18_500), T2);
+
+      assertThatThrownBy(() -> bet.settle(SettlementResult.LOST, krw(0), T2))
+          .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void cannot_void_after_settle() {
+      Bet bet = accepted();
+      bet.settle(SettlementResult.WON, krw(18_500), T2);
+
+      assertThatThrownBy(() -> bet.voidBet(VoidReason.ADMIN_VOID, T2))
+          .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void settle_rejects_payout_currency_mismatch() {
+      Bet bet = accepted();
+
+      assertThatThrownBy(
+              () -> bet.settle(SettlementResult.WON, new Money(18_500, Currency.USD), T2))
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("Payout currency");
     }
   }
 }
