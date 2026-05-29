@@ -4,6 +4,7 @@ import com.sportsbook.betting.domain.Bet;
 import com.sportsbook.betting.outbox.OutboxEvent;
 import com.sportsbook.betting.outbox.OutboxEventRepository;
 import com.sportsbook.betting.persistence.BetRepository;
+import com.sportsbook.protocol.domain.BetStatus;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
@@ -44,10 +45,16 @@ public class BetStore {
     bets.saveAndFlush(bet);
   }
 
-  /** PENDING -> REJECTED after a risk or wallet decline. No-op if the bet is already gone. */
+  /**
+   * PENDING -> REJECTED after a risk or wallet decline. Guarded on PENDING so it is idempotent if a
+   * reconciliation tick revisits a bet that already settled — no-op if the bet is gone or no longer
+   * pending.
+   */
   @Transactional
   public void markRejected(UUID betId, String reason, Instant now) {
-    bets.findById(betId).ifPresent(bet -> bet.reject(reason, now));
+    bets.findById(betId)
+        .filter(bet -> bet.status() == BetStatus.PENDING)
+        .ifPresent(bet -> bet.reject(reason, now));
   }
 
   /**
@@ -60,6 +67,11 @@ public class BetStore {
         bets.findById(betId)
             .orElseThrow(
                 () -> new IllegalStateException("Bet vanished before acceptance: " + betId));
+    // Idempotent: if a concurrent path / earlier reconciliation tick already accepted this bet,
+    // do not accept again or enqueue a duplicate outbox row.
+    if (bet.status() != BetStatus.PENDING) {
+      return bet;
+    }
     bet.accept(now);
     outbox.save(event);
     return bet;

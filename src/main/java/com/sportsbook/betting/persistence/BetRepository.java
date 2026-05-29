@@ -1,8 +1,12 @@
 package com.sportsbook.betting.persistence;
 
 import com.sportsbook.betting.domain.Bet;
+import com.sportsbook.protocol.domain.BetStatus;
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 
@@ -19,4 +23,11 @@ public interface BetRepository extends JpaRepository<Bet, UUID> {
   /** Loads a bet with its legs eagerly so callers can read the slip outside an open session. */
   @EntityGraph(attributePaths = "legs")
   Optional<Bet> findWithLegsByBetId(UUID betId);
+
+  /**
+   * Stale bets in a given status, legs eagerly fetched — the reconciliation scan for PENDING bets
+   * older than the timeout (ADR-0017 compensation). Backed by ix_bet_status_created.
+   */
+  @EntityGraph(attributePaths = "legs")
+  List<Bet> findByStatusAndCreatedAtBefore(BetStatus status, Instant threshold, Pageable pageable);
 }
