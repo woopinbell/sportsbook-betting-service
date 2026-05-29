@@ -10,6 +10,16 @@ spring:
   # a forgotten override surfaces as a NoSuchBeanDefinitionException instead of
   # silently falling back to a stale local PostgreSQL.
 
+betting:
+  # Park both @Scheduled jobs (24h) so each test drives the outbox publisher /
+  # reconciliation explicitly. pending-timeout 0s makes any PENDING bet
+  # immediately eligible for the reconciliation scan.
+  outbox:
+    poll-interval-ms: 86400000
+  reconciliation:
+    poll-interval-ms: 86400000
+    pending-timeout: 0s
+
 logging:
   level:
     com.sportsbook.betting: DEBUG

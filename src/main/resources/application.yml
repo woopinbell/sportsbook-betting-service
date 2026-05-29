@@ -89,6 +89,15 @@ betting:
     connect-timeout: 200ms
     read-timeout: 500ms
 
+  # Transactional outbox drain to Kafka (ADR-0006, sender side).
+  outbox:
+    poll-interval-ms: 1000
+
+  # Reconciliation of stale PENDING bets (ADR-0017 compensation).
+  reconciliation:
+    poll-interval-ms: 10000
+    pending-timeout: 30s
+
 # Resilience4j (ADR-0017). Only DependencyUnavailableException (the fail-closed
 # signal the clients raise on timeout / 5xx / connection error) is recorded, so
 # business rejections (limit exceeded, insufficient balance) never trip a breaker.
