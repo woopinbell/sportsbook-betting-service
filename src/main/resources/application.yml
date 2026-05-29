@@ -66,3 +66,17 @@ logging:
     root: INFO
     com.sportsbook.betting: INFO
     org.hibernate.SQL: WARN
+
+# Betting slip policy (ADR-0008 / ADR-0009). Type-safe bound into
+# BettingPolicyProperties; a malformed value fails startup.
+betting:
+  policy:
+    max-selections: 15
+    max-total-odds: 10000
+    min-stake:
+      KRW: 1000
+      USD: 100
+    max-stake:
+      KRW: 1000000
+      USD: 1000
+    slippage-tolerance-percent: 3
