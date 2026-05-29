@@ -1,0 +1,12 @@
+{
+  "request": {
+    "method": "POST",
+    "urlPath": "/internal/v1/wallet/transactions/credit"
+  },
+  "response": {
+    "status": 200,
+    "headers": { "Content-Type": "application/json" },
+    "jsonBody": { "operationGroupId": "{{randomValue type='UUID'}}" },
+    "transformers": ["response-template"]
+  }
+}

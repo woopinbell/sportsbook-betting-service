@@ -1,0 +1,95 @@
+name: betting-loadtest
+
+# Full placement stack for load tests: betting + PostgreSQL + Redis + Kafka,
+# with risk-service and wallet-service replaced by a single WireMock that always
+# approves / debits. This isolates betting's orchestration (validate -> slippage
+# -> risk -> wallet -> accept -> outbox) so the benchmark measures THIS service,
+# not its dependencies.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: betting
+      POSTGRES_USER: betting
+      POSTGRES_PASSWORD: betting
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U betting -d betting"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  kafka:
+    image: apache/kafka:3.7.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: controller,broker
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qg"
+    ports:
+      - "59092:9092"
+
+  # Stand-in for risk-service (/internal/v1/risk/check -> approved) and
+  # wallet-service (/internal/v1/wallet/transactions/debit|credit -> ok).
+  wiremock:
+    image: wiremock/wiremock:3.9.2
+    command: ["--disable-banner", "--local-response-templating"]
+    volumes:
+      - ./wiremock/mappings:/home/wiremock/mappings:ro
+    ports:
+      - "58080:8080"
+
+  betting:
+    image: eclipse-temurin:17-jre
+    working_dir: /app
+    command: ["java", "-jar", "/app/betting-service-0.1.0-SNAPSHOT.jar"]
+    volumes:
+      - ../target:/app:ro
+    environment:
+      BETTING_DB_URL: jdbc:postgresql://postgres:5432/betting
+      BETTING_DB_USER: betting
+      BETTING_DB_PASSWORD: betting
+      BETTING_KAFKA_BOOTSTRAP: kafka:9092
+      BETTING_REDIS_HOST: redis
+      BETTING_REDIS_PORT: 6379
+      BETTING_HTTP_PORT: 8082
+      RISK_BASE_URL: http://wiremock:8080
+      WALLET_BASE_URL: http://wiremock:8080
+      # Park the background drains so they don't steal CPU from the hot
+      # placement path during the throughput benchmark.
+      BETTING_OUTBOX_POLL_INTERVAL_MS: 300000
+      BETTING_RECONCILIATION_POLL_INTERVAL_MS: 300000
+    ports:
+      - "58082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      wiremock:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8082/actuator/health/readiness || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 30s
