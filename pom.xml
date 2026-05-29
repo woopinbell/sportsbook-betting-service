@@ -1,0 +1,301 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+        ADR-0015 baseline: Java 17 + Spring Boot 3.2.x + Maven. Inherits from
+        spring-boot-starter-parent so dependency/plugin versions stay aligned
+        with the Boot BOM. ADR-0016: English commit / English README summary
+        box / Korean docs.
+    -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.11</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.sportsbook</groupId>
+    <artifactId>betting-service</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <name>betting-service</name>
+    <description>
+        Core bet-placement service for the sportsbook system. Accepts bet slips
+        (Single / Multiple / System K-of-N), validates slip structure and odds
+        slippage, then synchronously orchestrates a risk check and a wallet
+        debit before accepting or rejecting (ADR-0017). Publishes a post-hoc
+        BetPlacedRequested event via the transactional outbox.
+    </description>
+
+    <properties>
+        <java.version>17</java.version>
+        <maven.compiler.release>17</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- Aligned with shared-protocol/pom.xml so Avro generated classes
+             produced there link cleanly here. ADR-0014 / ADR-0006. -->
+        <shared-protocol.version>0.1.0-SNAPSHOT</shared-protocol.version>
+        <avro.version>1.12.0</avro.version>
+        <testcontainers.version>1.20.3</testcontainers.version>
+        <!-- Pinned because annotationProcessorPaths does not consult the
+             Spring Boot BOM; keep in sync with the BOM-managed version. -->
+        <lombok.version>1.18.30</lombok.version>
+
+        <!-- ADR-0017: timeouts + circuit breaker around the synchronous risk /
+             wallet calls. Not managed by the Boot 3.2 BOM, so pinned here.
+             2.2.0 is the Spring Boot 3.x-compatible line. -->
+        <resilience4j.version>2.2.0</resilience4j.version>
+        <!-- Self-contained (shaded) WireMock so the risk / wallet HTTP stubs in
+             tests do not collide with the app's Jetty / Jackson versions. -->
+        <wiremock.version>3.9.2</wiremock.version>
+
+        <spotless.version>2.43.0</spotless.version>
+        <checkstyle.plugin.version>3.5.0</checkstyle.plugin.version>
+        <checkstyle.version>10.18.2</checkstyle.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>${testcontainers.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- Cross-repo contracts: Money / Odds / IdempotencyKey value objects,
+             BetSlipType sealed interface, BetStatus enum, ErrorCode, and the
+             Avro-generated BetPlacedRequested event. Resolved from mavenLocal
+             during dev. -->
+        <dependency>
+            <groupId>com.sportsbook</groupId>
+            <artifactId>shared-protocol</artifactId>
+            <version>${shared-protocol.version}</version>
+        </dependency>
+
+        <!-- Spring Boot starters -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+        <!-- Lettuce-backed Redis: odds-cache reads (slippage check against the
+             odds-feed-service cache) + the idempotency SETNX fast path
+             (ADR-0005). Strong guarantee still comes from the DB unique
+             constraint on bet.idempotency_key. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+        <!-- AOP weaving for the Resilience4j @CircuitBreaker / @TimeLimiter
+             annotation aspects. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aop</artifactId>
+        </dependency>
+
+        <!-- Persistence: ADR-0005 — PostgreSQL 16 + Flyway. -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+
+        <!-- Messaging: ADR-0006 (Kafka) + ADR-0014 (Avro 1.12.x, schema files
+             owned by shared-protocol; this service publishes binary-encoded
+             records via Avro's DatumWriter, no Schema Registry in V1). The
+             outbox carries the post-hoc BetPlacedRequested event. -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.avro</groupId>
+            <artifactId>avro</artifactId>
+            <version>${avro.version}</version>
+        </dependency>
+
+        <!-- Resilience4j (ADR-0017): timeout + circuit breaker so a slow risk /
+             wallet dependency cannot stall the whole placement path. -->
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-spring-boot3</artifactId>
+            <version>${resilience4j.version}</version>
+        </dependency>
+
+        <!-- Observability: ADR-0007. JSON structured logs + OTel exporter +
+             Prometheus scrape via Actuator. -->
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+            <version>7.4</version>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- Lombok: boilerplate trim alongside Java 17 records (ADR-0015). -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Test stack: ADR-0015 — JUnit5 + AssertJ + Mockito + Testcontainers. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>kafka</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- WireMock: stubs the risk-service /check and wallet-service
+             /debit | /credit HTTP endpoints in client + placement tests. -->
+        <dependency>
+            <groupId>org.wiremock</groupId>
+            <artifactId>wiremock-standalone</artifactId>
+            <version>${wiremock.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>${lombok.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <excludes>
+                        <exclude>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                        </exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+
+            <!-- Spotless: google-java-format (GOOGLE style, same version as
+                 shared-protocol). Runs on the verify phase; use
+                 `mvn spotless:apply` to auto-format. -->
+            <plugin>
+                <groupId>com.diffplug.spotless</groupId>
+                <artifactId>spotless-maven-plugin</artifactId>
+                <version>${spotless.version}</version>
+                <configuration>
+                    <java>
+                        <includes>
+                            <include>src/main/java/**/*.java</include>
+                            <include>src/test/java/**/*.java</include>
+                        </includes>
+                        <googleJavaFormat>
+                            <version>1.22.0</version>
+                            <style>GOOGLE</style>
+                        </googleJavaFormat>
+                        <removeUnusedImports/>
+                        <trimTrailingWhitespace/>
+                        <endWithNewline/>
+                    </java>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals><goal>check</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Checkstyle: shared rule set lifted from shared-protocol.
+                 Spotless owns layout; this catches semantic rules (magic
+                 numbers, parameter counts, unused imports). -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-checkstyle-plugin</artifactId>
+                <version>${checkstyle.plugin.version}</version>
+                <dependencies>
+                    <dependency>
+                        <groupId>com.puppycrawl.tools</groupId>
+                        <artifactId>checkstyle</artifactId>
+                        <version>${checkstyle.version}</version>
+                    </dependency>
+                </dependencies>
+                <configuration>
+                    <configLocation>config/checkstyle/checkstyle.xml</configLocation>
+                    <consoleOutput>true</consoleOutput>
+                    <failOnViolation>true</failOnViolation>
+                    <includeTestSourceDirectory>false</includeTestSourceDirectory>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>checkstyle-validate</id>
+                        <phase>verify</phase>
+                        <goals><goal>check</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

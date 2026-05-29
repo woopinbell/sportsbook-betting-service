@@ -1,0 +1,15 @@
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+    clean-disabled: false
+  # datasource / data.redis / kafka are filled by @DynamicPropertySource from
+  # Testcontainers in each integration test class — leaving them unset here so
+  # a forgotten override surfaces as a NoSuchBeanDefinitionException instead of
+  # silently falling back to a stale local PostgreSQL.
+
+logging:
+  level:
+    com.sportsbook.betting: DEBUG

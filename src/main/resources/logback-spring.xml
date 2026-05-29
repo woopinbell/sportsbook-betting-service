@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    ADR-0007 logging policy: structured JSON in container deployments,
+    human-readable console in local dev. Activate JSON output by adding the
+    `json` profile (e.g. SPRING_PROFILES_ACTIVE=json). The default profile keeps
+    the readable console formatter so a local run stays grep-friendly.
+-->
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <springProperty scope="context" name="appName" source="spring.application.name" defaultValue="betting-service"/>
+
+    <springProfile name="!json">
+        <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+
+    <springProfile name="json">
+        <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <includeMdcKeyName>traceId</includeMdcKeyName>
+                <includeMdcKeyName>spanId</includeMdcKeyName>
+                <customFields>{"service":"${appName}"}</customFields>
+                <timestampPattern>yyyy-MM-dd'T'HH:mm:ss.SSSXXX</timestampPattern>
+            </encoder>
+        </appender>
+        <root level="INFO">
+            <appender-ref ref="JSON"/>
+        </root>
+    </springProfile>
+
+    <logger name="com.sportsbook" level="DEBUG"/>
+    <logger name="org.apache.kafka" level="WARN"/>
+    <logger name="org.apache.kafka.clients.NetworkClient" level="ERROR"/>
+</configuration>

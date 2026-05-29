@@ -1,0 +1,43 @@
+<?xml version="1.0"?>
+<!DOCTYPE module PUBLIC
+    "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
+    "https://checkstyle.org/dtds/configuration_1_3.dtd">
+
+<!--
+    Minimal semantic rule set. Spotless + google-java-format owns layout;
+    Checkstyle owns rules that aren't pure formatting (magic numbers, parameter
+    counts, unused imports, etc.). Grows as real violations show up during dev.
+-->
+<module name="Checker">
+    <property name="severity" value="error"/>
+    <property name="charset" value="UTF-8"/>
+
+    <module name="SuppressWarningsFilter"/>
+
+    <module name="TreeWalker">
+        <module name="SuppressWarningsHolder"/>
+
+        <module name="MagicNumber">
+            <property name="ignoreNumbers" value="-1, 0, 1, 2, 100"/>
+            <property name="ignoreHashCodeMethod" value="true"/>
+            <property name="ignoreAnnotation" value="true"/>
+            <property name="ignoreFieldDeclaration" value="true"/>
+        </module>
+
+        <!-- Records' generated constructors are not methods (no METHOD_DEF
+             token) so this rule only catches regular methods, never record
+             headers. Test fixture builders can exceed via @SuppressWarnings. -->
+        <module name="ParameterNumber">
+            <property name="max" value="10"/>
+            <property name="ignoreOverriddenMethods" value="true"/>
+            <property name="tokens" value="METHOD_DEF"/>
+        </module>
+
+        <module name="UnusedImports"/>
+        <module name="RedundantImport"/>
+        <module name="EmptyBlock">
+            <property name="option" value="text"/>
+        </module>
+        <module name="HideUtilityClassConstructor"/>
+    </module>
+</module>
