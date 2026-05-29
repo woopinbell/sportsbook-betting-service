@@ -1,8 +1,10 @@
 package com.sportsbook.betting.settlement;
 
+import com.sportsbook.betting.domain.VoidReason;
 import com.sportsbook.betting.outbox.AvroSerializer;
 import com.sportsbook.protocol.domain.SettlementResult;
 import com.sportsbook.protocol.event.BetSettled;
+import com.sportsbook.protocol.event.BetVoided;
 import com.sportsbook.protocol.value.Currency;
 import com.sportsbook.protocol.value.Money;
 import java.util.UUID;
@@ -26,6 +28,7 @@ import org.springframework.stereotype.Component;
 public class SettlementResultListener {
 
   static final String SETTLED_TOPIC = "bet.settled.v1";
+  static final String VOIDED_TOPIC = "bet.voided.v1";
   private static final String AUTO_STARTUP = "${betting.kafka.consumer.auto-startup:true}";
 
   private static final Logger log = LoggerFactory.getLogger(SettlementResultListener.class);
@@ -43,6 +46,15 @@ public class SettlementResultListener {
     SettlementResult result = SettlementResult.valueOf(event.getResult().name());
     log.debug("BetSettled received: betId={} result={}", betId, result);
     service.applySettled(betId, result, toMoney(event.getPayout()), event.getSettledAt());
+  }
+
+  @KafkaListener(topics = VOIDED_TOPIC, autoStartup = AUTO_STARTUP)
+  public void onBetVoided(byte[] payload) {
+    BetVoided event = AvroSerializer.deserialize(payload, BetVoided.class);
+    UUID betId = UUID.fromString(event.getBetId().toString());
+    VoidReason reason = VoidReason.valueOf(event.getReason().name());
+    log.debug("BetVoided received: betId={} reason={}", betId, reason);
+    service.applyVoided(betId, reason, event.getVoidedAt());
   }
 
   private static Money toMoney(com.sportsbook.protocol.event.Money money) {

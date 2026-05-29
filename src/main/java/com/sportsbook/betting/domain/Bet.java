@@ -43,6 +43,7 @@ public class Bet {
   private static final int MULTIPLE_MIN_LEGS = 2;
   private static final int STATUS_COLUMN_LENGTH = 16;
   private static final int SETTLEMENT_RESULT_COLUMN_LENGTH = 8;
+  private static final int VOID_REASON_COLUMN_LENGTH = 24;
 
   @Id
   @Column(name = "bet_id", nullable = false, updatable = false)
@@ -104,6 +105,10 @@ public class Bet {
         column = @Column(name = "settled_payout_currency", length = 3))
   })
   private EmbeddedMoney settledPayout;
+
+  @Enumerated(EnumType.STRING)
+  @Column(name = "void_reason", length = VOID_REASON_COLUMN_LENGTH)
+  private VoidReason voidReason;
 
   @Column(name = "resolved_at")
   private Instant resolvedAt;
@@ -225,6 +230,22 @@ public class Bet {
     this.updatedAt = now;
   }
 
+  /**
+   * ACCEPTED → VOIDED: the event was cancelled/postponed (or a market/admin void), so the whole
+   * slip is voided and the stake fully refunded by wallet-service (ADR-0012). Distinct from a
+   * SETTLED slip whose {@link SettlementResult} happens to be {@code VOID} (a per-selection
+   * refund).
+   */
+  public void voidBet(VoidReason reason, Instant now) {
+    requireStatus(BetStatus.ACCEPTED);
+    Objects.requireNonNull(reason, "reason");
+    Objects.requireNonNull(now, "now");
+    this.status = BetStatus.VOIDED;
+    this.voidReason = reason;
+    this.resolvedAt = now;
+    this.updatedAt = now;
+  }
+
   /** Rebuilds the rich slip type, including the K-of-N parameters for SYSTEM slips. */
   public BetSlipType slipType() {
     return switch (slipType) {
@@ -319,6 +340,10 @@ public class Bet {
 
   public Instant resolvedAt() {
     return resolvedAt;
+  }
+
+  public VoidReason voidReason() {
+    return voidReason;
   }
 
   public String idempotencyKey() {

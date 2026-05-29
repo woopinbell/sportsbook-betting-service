@@ -1,6 +1,7 @@
 package com.sportsbook.betting.settlement;
 
 import com.sportsbook.betting.domain.Bet;
+import com.sportsbook.betting.domain.VoidReason;
 import com.sportsbook.betting.persistence.BetRepository;
 import com.sportsbook.protocol.domain.BetStatus;
 import com.sportsbook.protocol.domain.SettlementResult;
@@ -48,5 +49,22 @@ public class BetSettlementService {
     }
     bet.settle(result, payout, settledAt);
     log.info("Bet {} settled: result={} payout={}", betId, result, payout);
+  }
+
+  /**
+   * Voids an {@code ACCEPTED} bet (ADR-0012): records the reason, status → {@code VOIDED}; the full
+   * stake refund is handled by wallet-service. No-op if already voided (idempotent replay).
+   */
+  @Transactional
+  public void applyVoided(UUID betId, VoidReason reason, Instant voidedAt) {
+    Bet bet =
+        bets.findById(betId)
+            .orElseThrow(() -> new IllegalStateException("BetVoided for unknown betId " + betId));
+    if (bet.status() == BetStatus.VOIDED) {
+      log.debug("BetVoided replay for {} — already VOIDED, skip", betId);
+      return;
+    }
+    bet.voidBet(reason, voidedAt);
+    log.info("Bet {} voided: reason={}", betId, reason);
   }
 }
