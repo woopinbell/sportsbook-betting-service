@@ -39,7 +39,7 @@
 
         <!-- Aligned with shared-protocol/pom.xml so Avro generated classes
              produced there link cleanly here. ADR-0014 / ADR-0006. -->
-        <shared-protocol.version>0.1.0-SNAPSHOT</shared-protocol.version>
+        <shared-protocol.version>0.2.0-SNAPSHOT</shared-protocol.version>
         <avro.version>1.12.0</avro.version>
         <testcontainers.version>1.20.3</testcontainers.version>
         <!-- Pinned because annotationProcessorPaths does not consult the
