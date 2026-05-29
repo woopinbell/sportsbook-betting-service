@@ -2,6 +2,7 @@ package com.sportsbook.betting.domain;
 
 import com.sportsbook.protocol.domain.BetSlipType;
 import com.sportsbook.protocol.domain.BetStatus;
+import com.sportsbook.protocol.domain.SettlementResult;
 import com.sportsbook.protocol.value.IdempotencyKey;
 import com.sportsbook.protocol.value.Money;
 import jakarta.persistence.AttributeOverride;
@@ -41,6 +42,7 @@ public class Bet {
 
   private static final int MULTIPLE_MIN_LEGS = 2;
   private static final int STATUS_COLUMN_LENGTH = 16;
+  private static final int SETTLEMENT_RESULT_COLUMN_LENGTH = 8;
 
   @Id
   @Column(name = "bet_id", nullable = false, updatable = false)
@@ -88,6 +90,23 @@ public class Bet {
 
   @Column(name = "rejection_reason", length = 64)
   private String rejectionReason;
+
+  // Settlement outcome (ADR-0006 / ADR-0013), null until the bet reaches a terminal state.
+  @Enumerated(EnumType.STRING)
+  @Column(name = "settlement_result", length = SETTLEMENT_RESULT_COLUMN_LENGTH)
+  private SettlementResult settlementResult;
+
+  @Embedded
+  @AttributeOverrides({
+    @AttributeOverride(name = "amount", column = @Column(name = "settled_payout_amount")),
+    @AttributeOverride(
+        name = "currency",
+        column = @Column(name = "settled_payout_currency", length = 3))
+  })
+  private EmbeddedMoney settledPayout;
+
+  @Column(name = "resolved_at")
+  private Instant resolvedAt;
 
   @Column(name = "idempotency_key", nullable = false, updatable = false, length = 128)
   private String idempotencyKey;
@@ -184,6 +203,28 @@ public class Bet {
     this.updatedAt = Objects.requireNonNull(now, "now");
   }
 
+  /**
+   * ACCEPTED → SETTLED: settlement-service adjudicated the bet after the match result (ADR-0006).
+   * Records the {@link SettlementResult} and the actual payout credited to the wallet — distinct
+   * from the worst-case {@link #maxPayout()} stored at acceptance. The payout shares the slip
+   * currency (no FX inside a slip, V1).
+   */
+  public void settle(SettlementResult result, Money payout, Instant now) {
+    requireStatus(BetStatus.ACCEPTED);
+    Objects.requireNonNull(result, "result");
+    Objects.requireNonNull(payout, "payout");
+    Objects.requireNonNull(now, "now");
+    if (payout.currency() != stake.currency()) {
+      throw new IllegalArgumentException(
+          "Payout currency " + payout.currency() + " does not match stake " + stake.currency());
+    }
+    this.status = BetStatus.SETTLED;
+    this.settlementResult = result;
+    this.settledPayout = EmbeddedMoney.of(payout);
+    this.resolvedAt = now;
+    this.updatedAt = now;
+  }
+
   /** Rebuilds the rich slip type, including the K-of-N parameters for SYSTEM slips. */
   public BetSlipType slipType() {
     return switch (slipType) {
@@ -266,6 +307,18 @@ public class Bet {
 
   public String rejectionReason() {
     return rejectionReason;
+  }
+
+  public SettlementResult settlementResult() {
+    return settlementResult;
+  }
+
+  public Money settledPayout() {
+    return settledPayout == null ? null : settledPayout.toMoney();
+  }
+
+  public Instant resolvedAt() {
+    return resolvedAt;
   }
 
   public String idempotencyKey() {

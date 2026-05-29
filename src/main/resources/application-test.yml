@@ -19,6 +19,11 @@ betting:
   reconciliation:
     poll-interval-ms: 86400000
     pending-timeout: 0s
+  # Settlement Kafka listener is parked by default in tests; the settlement
+  # integration test re-enables it once its embedded broker is up.
+  kafka:
+    consumer:
+      auto-startup: false
 
 logging:
   level:
