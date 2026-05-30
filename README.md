@@ -2,50 +2,74 @@
 
 > **English summary**
 >
-> **What it is.** `betting-service` is the core bet-placement service of the
-> sportsbook microservice system. It accepts user bet slips — Single, Multiple,
-> and System (K-of-N) — validates their structure and odds, then decides
-> accept/reject synchronously.
+> **What it is.** `betting-service` is the core bet-placement domain service of
+> the sportsbook microservice system — the highest-impact repo in the system.
+> It accepts user bet slips (Single, Multiple, and System / K-of-N), validates
+> their structure and live odds, decides accept/reject **synchronously**, and
+> later applies the asynchronous settlement outcome onto each accepted bet.
 >
-> **Architecture.** It orchestrates placement on the request path (ADR-0017):
-> validate the slip, check odds slippage against the `odds-feed-service` Redis
-> cache, then call `risk-service` (`/check`) and `wallet-service` (`/debit`)
-> over synchronous HTTP, guarded by Resilience4j timeouts + a circuit breaker.
-> Acceptance/rejection returns in one request (target p99 < 100 ms). A post-hoc
-> `BetPlacedRequested` event is published through a transactional outbox for
-> downstream risk aggregation and the settlement read model (ADR-0006). Depends
-> on `shared-protocol` (library) plus `wallet-service`, `risk-service`, and
-> `odds-feed-service` at runtime; called by `gateway`.
+> **Architecture — placement (synchronous, ADR-0017).** Bet placement is a
+> synchronous orchestration, not an async Saga: odds move by the second and the
+> user must see accepted/rejected immediately, so the verdict has to return
+> within one request (target p99 < 100 ms). The flow is: validate the slip
+> (L1/L2/L4/L5) → check odds slippage against the `odds-feed-service` Redis
+> cache (3 % tolerance) → persist the bet PENDING → call `risk-service`
+> (`/check`) then `wallet-service` (`/debit`) over synchronous HTTP → accept (or
+> reject) and return. The orchestrator is deliberately **not** `@Transactional`:
+> the DB steps run as short transactions and the HTTP calls happen strictly
+> between them, so a pooled DB connection is never held across a network
+> round-trip. The risk/wallet calls are guarded by Resilience4j timeouts + a
+> circuit breaker that records only infrastructure failures, so a business
+> decline (limit exceeded / insufficient balance) never trips the breaker.
 >
-> **Features.** Slip structural rules — Same-Market (L1) and Same-Event (L2)
-> restrictions, max selections (L4), max total odds (L5) — plus 3 % odds
-> slippage tolerance. System(K-of-N) combination + max-payout computation.
-> Idempotent placement keyed by an `Idempotency-Key` header (Redis SETNX fast
-> path + DB unique constraint), with `betId` propagated as the wallet/risk
-> idempotency key so retries are safe. A reconciliation job rolls stale PENDING
-> bets forward or back.
+> **Architecture — post-placement & settlement (asynchronous, ADR-0006).** On
+> acceptance a `BetPlacedRequested` event is written to a transactional outbox
+> in the same transaction (so the event can never diverge from the acceptance)
+> and drained to Kafka by a scheduled publisher, feeding risk aggregation and
+> the settlement read model. After a match result, `settlement-service`
+> publishes `BetSettled` / `BetVoided` (Avro); a Kafka listener here applies the
+> terminal transition (ACCEPTED → SETTLED / VOIDED), idempotent by `betId`.
 >
-> **Tech stack.** Java 17, Spring Boot 3.2, Maven. PostgreSQL 16 + Flyway
-> (STI `bet` + `bet_leg`). Redis (odds cache read + idempotency). Kafka + Avro
-> (no schema registry in V1). Resilience4j. Micrometer / OpenTelemetry /
-> Prometheus.
+> **Consistency.** Placement idempotency is keyed by the `Idempotency-Key`
+> header — a Redis SETNX fast path plus a DB unique constraint as the strong
+> guard — and `betId` is propagated as the wallet/risk idempotency key so a
+> retry never double-charges. A reconciliation job closes the partial-failure
+> window (wallet debited but the accept transaction lost) by rolling stale
+> PENDING bets forward (re-debit succeeds → ACCEPTED) or back (insufficient →
+> REJECTED), with no compensating credit on roll-back because the debit never
+> landed.
 >
-> **Build & run.** `mvn verify` runs Spotless, Checkstyle and the test suite;
+> **Position.** Depends on `shared-protocol` (library) plus `wallet-service`,
+> `risk-service`, and `odds-feed-service` at runtime; called by `gateway`;
+> consumed from by `settlement-service` and `risk-service` (Kafka).
+>
+> **Tech stack.** Java 17, Spring Boot 3.2, Maven. PostgreSQL 16 + Flyway (STI
+> `bet` + `bet_leg`, single-table inheritance over the slip type). Redis (odds
+> cache read + idempotency SETNX). Kafka + Avro, binary, no schema registry in
+> V1 (consumers pin the shared-protocol classes). Resilience4j. Micrometer /
+> OpenTelemetry / Prometheus. Tested with JUnit5 + AssertJ + Mockito +
+> Testcontainers + WireMock + embedded Kafka.
+>
+> **Build & run.** `mvn verify` runs Spotless, Checkstyle and the full suite;
 > integration tests use Testcontainers, so Docker must be running, and
 > `shared-protocol` must be installed to mavenLocal first
 > (`cd ../shared-protocol && mvn install`).
 >
 > **Performance.** Target: 10 000 concurrent bets, p99 < 100 ms, error rate
-> < 0.1 %. Dev-host baseline (Docker Desktop, all dependencies co-located in
-> one VM): 150 placements/s sustained at p99 148 ms with 0 % errors;
-> idempotent retries collapse to a single accepted bet; 100 same-key
-> concurrent requests never double-accept. p99 < 100 ms / 10k concurrency is a
-> production (multi-replica, dedicated hosts) target — see
+> < 0.1 %. Dev-host baseline (Docker Desktop, PostgreSQL + Redis + Kafka + a
+> WireMock risk/wallet stub + the betting JVM all sharing one VM): 150
+> placements/s sustained at p99 148 ms with 0 % errors; 50 idempotent retries
+> collapse to a single accepted bet; 100 same-key concurrent requests return
+> only 201/409 and never double-accept. p99 < 100 ms / 10k concurrency is a
+> production (multi-replica, dedicated hosts) target — each bet is two
+> synchronous HTTP round-trips plus two DB transactions, and the dev host
+> co-locates six processes on one CPU pool — not a structural ceiling. See
 > [`load-test/results/BEST.md`](load-test/results/BEST.md).
 >
 > **Limitations (V1).** No SGP / Bet Builder, no cash out, no in-play betting,
-> no server-side bet cart; settlement (SETTLED transition) is handled later by
-> `settlement-service`. See ADR-0005 / 0006 / 0008 / 0009 / 0013 / 0017 in
+> no server-side bet cart, no half-won / half-lost (Asian handicap) results.
+> Infrastructure-unavailable maps to 500 (no `SERVICE_UNAVAILABLE` in the V1
+> error catalog). See ADR-0005 / 0006 / 0008 / 0009 / 0012 / 0013 / 0017 in
 > `orchestration/docs/architecture/decisions/`.
 
 ---
@@ -61,16 +85,22 @@
 ┌──────────────────────────────────────────────────────────────────────┐
 │ shared-protocol  ←── betting-service (this repo)                      │
 │                                                                        │
+│ [접수 — 동기, ADR-0017]                                                │
 │ gateway ──→ betting ──HTTP──→ risk-service   (/check, 동기)            │
 │                  │  ──HTTP──→ wallet-service (/debit, 동기)            │
 │                  │  ──Redis read──→ odds-feed-service (slippage)       │
 │                  └──outbox──→ Kafka: BetPlacedRequested (사후)         │
-│                                  └──→ settlement-service (read model)  │
+│                                  └──→ risk(집계) / settlement(read model)│
+│                                                                        │
+│ [정산 — 비동기, ADR-0006 / Phase 4]                                    │
+│ settlement-service ──Kafka──→ betting (BetSettled/BetVoided consume)   │
+│                                  └──→ bet SETTLED / VOIDED 전이         │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
 상세 의존성 그래프와 cross-cutting 결정은 상위 폴더의
-[`sportsbook/CLAUDE.md`](../CLAUDE.md) 와 ADR 디렉터리를 참조한다.
+[`sportsbook/CLAUDE.md`](../CLAUDE.md) 와 ADR 디렉터리를 참조한다. 개발 과정·회고는
+[`docs/`](docs/README.md)(커밋별 문서 + reflection)에 정리돼 있다.
 
 ## 책임 범위
 
@@ -87,12 +117,18 @@
 - 동기 orchestration — risk check → wallet debit 순차 호출, 즉각 수락/거절
   ([ADR-0017](../orchestration/docs/architecture/decisions/0017-bet-placement-sync-orchestration.md))
 - 베팅 수락 후 outbox로 `BetPlacedRequested` publish (사후 집계/정산용)
+- reconciliation — wallet 차감 성공 후 accept 유실로 PENDING에 박힌 베팅을
+  멱등 re-debit으로 roll-forward / roll-back (ADR-0017 보상)
+- 정산 결과 consume — settlement-service의 `BetSettled` / `BetVoided`(Kafka)를
+  받아 ACCEPTED 베팅을 `SETTLED` / `VOIDED`로 전이 (betId 멱등, ADR-0006)
 - 베팅 상태 조회 API
 
 **하지 않는다**:
 
 - 잔고 조회/변경 직접 수행 (wallet-service 책임)
-- 베팅 정산 / `SETTLED` 전환 (settlement-service 책임, Phase 4)
+- 베팅 결과 *판정* + payout *산정* (settlement-service 책임) — betting은 그 결과를
+  consume해 상태/실제 payout을 *기록*만 한다
+- 환불 실행 (wallet-service 책임) — betting은 VOIDED 사유·상태만 기록
 - odds 계산/관리 (odds-feed-service 책임)
 
 ## 빌드 / 실행 / 테스트
@@ -121,15 +157,21 @@ mvn spotless:apply
   - `POST /internal/v1/bets` — 슬립 접수 (`Idempotency-Key` 헤더 필수)
   - `GET  /internal/v1/bets/{id}` — 베팅 상태 조회
   - `GET  /internal/v1/bets?userId=&cursor=&limit=` — 베팅 내역 (cursor pagination)
-- Kafka publish (사후, outbox): `BetPlacedRequested`
+- Kafka publish (사후, outbox): `BetPlacedRequested` (`bet.placed.v1`)
+- Kafka consume (정산, Phase 4): `BetSettled` (`bet.settled.v1`),
+  `BetVoided` (`bet.voided.v1`) → `SETTLED` / `VOIDED` 전이
 
 ## 제한 사항 (V1)
 
-SGP / Bet Builder, cash out, in-play(라이브) 베팅, 서버사이드 베팅 카트는 V1
+SGP / Bet Builder, cash out, in-play(라이브) 베팅, 서버사이드 베팅 카트,
+half-won / half-lost(Asian handicap) 결과는 V1
 미지원([ADR-0008](../orchestration/docs/architecture/decisions/0008-betting-domain-model.md),
 [ADR-0012](../orchestration/docs/architecture/decisions/0012-v1-scope-decisions.md)).
-정산(`SETTLED` 전환)은 Phase 4의 settlement-service가 `BetSettled` consume으로
-처리한다.
+정산 결과 *판정·payout 산정*은 settlement-service 책임이고, betting은 그 결과
+(`BetSettled` / `BetVoided`)를 consume해 상태와 실제 payout을 *기록*만 한다.
+인프라 불가(타임아웃/5xx)는 V1 ErrorCode 카탈로그에 `SERVICE_UNAVAILABLE`가 없어
+500으로 매핑된다. 더 깊은 한계·변경 비용은
+[`docs/reflection/`](docs/reflection/retrospective.md) 참조.
 
 ## 성능
 
